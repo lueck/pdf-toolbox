@@ -10,6 +10,7 @@ module Pdf.Content.FontInfo
   SimpleFontEncoding(..),
   FIComposite(..),
   CIDFontWidths(..),
+  FontDescriptor(..),
   makeCIDFontWidths,
   cidFontGetWidth,
   fontInfoDecodeGlyphs
@@ -53,7 +54,8 @@ data FISimple = FISimple {
   fiSimpleEncoding :: Maybe SimpleFontEncoding,
   fiSimpleWidths :: Maybe (Int, Int, [Double]),
   -- ^ FirstChar, LastChar, list of widths
-  fiSimpleFontMatrix :: Transform Double
+  fiSimpleFontMatrix :: Transform Double,
+  fiSimpleFontDescriptor :: Maybe FontDescriptor
   }
   deriving (Show)
 
@@ -76,7 +78,8 @@ data SimpleFontEncoding = SimpleFontEncoding {
 data FIComposite = FIComposite {
   fiCompositeUnicodeCMap :: Maybe UnicodeCMap,
   fiCompositeWidths :: CIDFontWidths,
-  fiCompositeDefaultWidth :: Double
+  fiCompositeDefaultWidth :: Double,
+  fiCompositeFontDescriptor :: Maybe FontDescriptor
   }
   deriving (Show)
 
@@ -101,6 +104,20 @@ instance Monoid CIDFontWidths where
 
 instance Semigroup CIDFontWidths where
   (<>) = mappend
+
+data FontDescriptor = FontDescriptor {
+  fdHeight :: Double -- height of bbox and default vertical displacement in vertical writing mode
+  }
+  deriving (Show)
+
+-- | Returns the height for a glyph of a font, in text space
+-- units. Defaults to 1.0 if a FontDescriptor is not present.
+getFontHeight :: FontInfo -> Int -> Double
+getFontHeight (FontInfoComposite fi) =
+  const $ fromMaybe 1.0 $ fmap ((/1000) . fdHeight) $ fiCompositeFontDescriptor fi
+getFontHeight (FontInfoSimple fi) =
+  const $ fromMaybe 1.0 $ fmap ((/1000) . fdHeight) $ fiSimpleFontDescriptor fi
+
 
 simpleFontEncodingDecode :: SimpleFontEncoding -> Word8 -> Maybe Text
 simpleFontEncodingDecode enc code =
@@ -147,7 +164,7 @@ cidFontGetWidth w code =
 
 -- | Decode string into list of glyphs and their widths
 fontInfoDecodeGlyphs :: FontInfo -> ByteString -> [(Glyph, Double)]
-fontInfoDecodeGlyphs (FontInfoSimple fi) = \bs ->
+fontInfoDecodeGlyphs fInfo@(FontInfoSimple fi) = \bs ->
   flip map (BS.unpack bs) $ \c ->
     let code = fromIntegral c
         txt =
@@ -188,20 +205,22 @@ fontInfoDecodeGlyphs (FontInfoSimple fi) = \bs ->
                             Vector (widths !! (code - firstChar)) 0
                       in w
                  else 0
+        height = getFontHeight fInfo code
     in (Glyph {
       glyphCode = code,
       glyphTopLeft = Vector 0 0,
-      glyphBottomRight = Vector width 1,
+      glyphBottomRight = Vector width height,
       glyphText = txt
       }, width)
-fontInfoDecodeGlyphs (FontInfoComposite fi) = \bs ->
+fontInfoDecodeGlyphs fInfo@(FontInfoComposite fi) = \bs ->
   case fiCompositeUnicodeCMap fi of
     Nothing ->  -- XXX: use encoding here
       tryDecode2byte $ BS.unpack bs
     Just toUnicode ->
       let getWidth = fromMaybe (fiCompositeDefaultWidth fi)
                    . cidFontGetWidth (fiCompositeWidths fi)
-      in cmapDecodeString getWidth toUnicode bs
+          getHeight = getFontHeight fInfo
+      in cmapDecodeString getWidth getHeight toUnicode bs
   where
   -- Most of the time composite fonts have 2-byte encoding,
   -- so lets try that for now.
@@ -213,10 +232,11 @@ fontInfoDecodeGlyphs (FontInfoComposite fi) = \bs ->
           case Text.decodeUtf8' (BS.pack [b1, b2]) of
             Right t -> Just t
             _ -> Nothing
+        height = getFontHeight fInfo code
         g = Glyph {
           glyphCode = code,
           glyphTopLeft = Vector 0 0,
-          glyphBottomRight = Vector width 1,
+          glyphBottomRight = Vector width height,
           glyphText = txt
           }
     in (g, width) : tryDecode2byte rest
@@ -224,20 +244,22 @@ fontInfoDecodeGlyphs (FontInfoComposite fi) = \bs ->
 
 cmapDecodeString
   :: (Int -> Double)
+  -> (Int -> Double)
   -> UnicodeCMap
   -> ByteString
   -> [(Glyph, Double)]
-cmapDecodeString getWidth cmap str = go str
+cmapDecodeString getWidth getHeight cmap str = go str
   where
   go s =
     case unicodeCMapNextGlyph cmap s of
       Nothing -> []
       Just (g, rest) ->
         let width = getWidth g / 1000
+            height = getHeight g
             glyph = Glyph {
           glyphCode = g,
           glyphTopLeft = Vector 0 0,
-          glyphBottomRight = Vector width 1,
+          glyphBottomRight = Vector width height,
           glyphText = unicodeCMapDecodeGlyph cmap g
           }
         in (glyph, width) : go rest

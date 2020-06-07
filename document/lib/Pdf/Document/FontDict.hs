@@ -28,6 +28,7 @@ import qualified Data.HashMap.Strict as HashMap
 import Control.Monad
 import Control.Exception hiding (throw)
 import qualified System.IO.Streams as Streams
+import Data.Maybe
 
 -- | Font subtypes
 data FontSubtype
@@ -111,10 +112,13 @@ loadFontInfoComposite pdf fontDict = do
           >>= Vector.mapM (deref pdf)
         sure $ makeCIDFontWidths arr
 
+  fontDescriptor <- loadFontDescriptor pdf descFont
+
   return $ FIComposite {
     fiCompositeUnicodeCMap = toUnicode,
     fiCompositeWidths = widths,
-    fiCompositeDefaultWidth = defaultWidth
+    fiCompositeDefaultWidth = defaultWidth,
+    fiCompositeFontDescriptor = fontDescriptor
     }
 
 loadFontInfoSimple :: Pdf -> Dict -> IO FISimple
@@ -173,11 +177,14 @@ loadFontInfoSimple pdf fontDict = do
                 `notice` "LastChar should be an integer"
         return $ Just (firstChar, lastChar, widths)
 
+  fontDescriptor <- loadFontDescriptor pdf fontDict
+
   return $ FISimple
     { fiSimpleUnicodeCMap = toUnicode
     , fiSimpleEncoding = encoding
     , fiSimpleWidths = widths
     , fiSimpleFontMatrix = scale 0.001 0.001
+    , fiSimpleFontDescriptor = fontDescriptor
     }
 
 loadEncodingDifferences :: Pdf -> Dict -> IO [(Word8, ByteString)]
@@ -222,3 +229,29 @@ loadUnicodeCMap pdf fontDict =
             Left e -> throwIO $ Corrupted ("can't parse cmap: " ++ show e) []
             Right cmap -> return $ Just cmap
         _ -> throwIO $ Corrupted "ToUnicode: not a stream" []
+
+loadFontDescriptor :: Pdf -> Dict -> IO (Maybe FontDescriptor)
+loadFontDescriptor pdf fontDict = do
+  case (HashMap.lookup "FontDescriptor" fontDict) of
+    Nothing -> return Nothing
+    Just o -> do
+      ref <- sure $ refValue o
+        `notice` "FontDescriptor should be a reference"
+      fontDescriptorObj <- lookupObject pdf ref
+      case fontDescriptorObj of
+        Dict fontDescriptor -> do
+
+          height <- do
+            let heightFromBBox [_, bottom, _, top] = (-) <$> realValue top <*> realValue bottom
+                heightFromBBox _ = Nothing
+                bboxHeight = join $ join $
+                             fmap (fmap (heightFromBBox . Vector.toList) . arrayValue) $
+                             HashMap.lookup "FontBBox" fontDescriptor
+                ascentHeight = (-)
+                               <$> (join $ fmap realValue $ HashMap.lookup "Ascent" fontDescriptor)
+                               <*> (join $ fmap realValue $ HashMap.lookup "Descent" fontDescriptor)
+                capHeight = join $ fmap realValue $ HashMap.lookup "CapHeight" fontDescriptor
+                defaultHeight = 1000
+            return $ fromMaybe (fromMaybe (fromMaybe defaultHeight capHeight) ascentHeight) bboxHeight
+          return $ Just $ FontDescriptor { fdHeight = height }
+        _ -> return Nothing
