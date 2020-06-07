@@ -241,17 +241,21 @@ loadFontDescriptor pdf fontDict = do
       case fontDescriptorObj of
         Dict fontDescriptor -> do
 
-          height <- do
-            let heightFromBBox [_, bottom, _, top] = (-) <$> realValue top <*> realValue bottom
-                heightFromBBox _ = Nothing
-                bboxHeight = join $ join $
-                             fmap (fmap (heightFromBBox . Vector.toList) . arrayValue) $
-                             HashMap.lookup "FontBBox" fontDescriptor
-                ascentHeight = (-)
-                               <$> (join $ fmap realValue $ HashMap.lookup "Ascent" fontDescriptor)
-                               <*> (join $ fmap realValue $ HashMap.lookup "Descent" fontDescriptor)
-                capHeight = join $ fmap realValue $ HashMap.lookup "CapHeight" fontDescriptor
-                defaultHeight = 1000
-            return $ fromMaybe (fromMaybe (fromMaybe defaultHeight capHeight) ascentHeight) bboxHeight
-          return $ Just $ FontDescriptor { fdHeight = height }
+          (yBottom, yTop) <- do
+            let fromBBox [_, bottom, _, top] = (,) <$> realValue top <*> realValue bottom
+                fromBBox _ = Nothing
+                bbox = join $ join $
+                       fmap (fmap (fromBBox . Vector.toList) . arrayValue) $
+                       HashMap.lookup "FontBBox" fontDescriptor
+                descAsc = (,)
+                          <$> (join $ fmap realValue $ HashMap.lookup "Ascent" fontDescriptor)
+                          <*> (join $ fmap realValue $ HashMap.lookup "Descent" fontDescriptor)
+                cap = (,) <$> Just 0 <*> (join $ fmap realValue $
+                                          HashMap.lookup "CapHeight" fontDescriptor)
+                def = (1000,1000)
+            return $ fromMaybe (fromMaybe (fromMaybe def cap) descAsc) bbox
+          return $ Just $ FontDescriptor
+            { fdBboxYBottom = yBottom
+            , fdBboxYTop = yTop
+            }
         _ -> return Nothing

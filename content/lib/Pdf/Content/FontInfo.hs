@@ -106,18 +106,22 @@ instance Semigroup CIDFontWidths where
   (<>) = mappend
 
 data FontDescriptor = FontDescriptor {
-  fdHeight :: Double -- height of bbox and default vertical displacement in vertical writing mode
+  fdBboxYBottom :: Double,
+  fdBboxYTop :: Double
   }
   deriving (Show)
 
--- | Returns the height for a glyph of a font, in text space
--- units. Defaults to 1.0 if a FontDescriptor is not present.
-getFontHeight :: FontInfo -> Int -> Double
-getFontHeight (FontInfoComposite fi) =
-  const $ fromMaybe 1.0 $ fmap ((/1000) . fdHeight) $ fiCompositeFontDescriptor fi
-getFontHeight (FontInfoSimple fi) =
-  const $ fromMaybe 1.0 $ fmap ((/1000) . fdHeight) $ fiSimpleFontDescriptor fi
+-- | Returns the Y coordinates for a bbox of a glyph of a font, in
+-- text space units. Defaults to (0,1) if no FontDescriptor is
+-- present.
+getGlyphYCoordinates :: FontInfo -> Int -> (Double, Double)
+getGlyphYCoordinates (FontInfoComposite fi) =
+  const $ fromMaybe (0,1) $ fmap fdYCoordinates $ fiCompositeFontDescriptor fi
+getGlyphYCoordinates (FontInfoSimple fi) =
+  const $ fromMaybe (0,1) $ fmap fdYCoordinates $ fiSimpleFontDescriptor fi
 
+fdYCoordinates :: FontDescriptor -> (Double, Double)
+fdYCoordinates = (,) <$> (/1000) . fdBboxYBottom <*> (/1000) . fdBboxYTop
 
 simpleFontEncodingDecode :: SimpleFontEncoding -> Word8 -> Maybe Text
 simpleFontEncodingDecode enc code =
@@ -205,11 +209,11 @@ fontInfoDecodeGlyphs fInfo@(FontInfoSimple fi) = \bs ->
                             Vector (widths !! (code - firstChar)) 0
                       in w
                  else 0
-        height = getFontHeight fInfo code
+        (yBot, yTop) = getGlyphYCoordinates fInfo code
     in (Glyph {
       glyphCode = code,
-      glyphTopLeft = Vector 0 0,
-      glyphBottomRight = Vector width height,
+      glyphTopLeft = Vector 0 yBot,
+      glyphBottomRight = Vector width yTop,
       glyphText = txt
       }, width)
 fontInfoDecodeGlyphs fInfo@(FontInfoComposite fi) = \bs ->
@@ -219,8 +223,8 @@ fontInfoDecodeGlyphs fInfo@(FontInfoComposite fi) = \bs ->
     Just toUnicode ->
       let getWidth = fromMaybe (fiCompositeDefaultWidth fi)
                    . cidFontGetWidth (fiCompositeWidths fi)
-          getHeight = getFontHeight fInfo
-      in cmapDecodeString getWidth getHeight toUnicode bs
+          getYs = getGlyphYCoordinates fInfo
+      in cmapDecodeString getWidth getYs toUnicode bs
   where
   -- Most of the time composite fonts have 2-byte encoding,
   -- so lets try that for now.
@@ -232,11 +236,11 @@ fontInfoDecodeGlyphs fInfo@(FontInfoComposite fi) = \bs ->
           case Text.decodeUtf8' (BS.pack [b1, b2]) of
             Right t -> Just t
             _ -> Nothing
-        height = getFontHeight fInfo code
+        (yBot, yTop) = getGlyphYCoordinates fInfo code
         g = Glyph {
           glyphCode = code,
-          glyphTopLeft = Vector 0 0,
-          glyphBottomRight = Vector width height,
+          glyphTopLeft = Vector 0 yBot,
+          glyphBottomRight = Vector width yTop,
           glyphText = txt
           }
     in (g, width) : tryDecode2byte rest
@@ -244,22 +248,22 @@ fontInfoDecodeGlyphs fInfo@(FontInfoComposite fi) = \bs ->
 
 cmapDecodeString
   :: (Int -> Double)
-  -> (Int -> Double)
+  -> (Int -> (Double, Double))
   -> UnicodeCMap
   -> ByteString
   -> [(Glyph, Double)]
-cmapDecodeString getWidth getHeight cmap str = go str
+cmapDecodeString getWidth getYs cmap str = go str
   where
   go s =
     case unicodeCMapNextGlyph cmap s of
       Nothing -> []
       Just (g, rest) ->
         let width = getWidth g / 1000
-            height = getHeight g
+            (yBot, yTop) = getYs g
             glyph = Glyph {
           glyphCode = g,
-          glyphTopLeft = Vector 0 0,
-          glyphBottomRight = Vector width height,
+          glyphTopLeft = Vector 0 yBot,
+          glyphBottomRight = Vector width yTop,
           glyphText = unicodeCMapDecodeGlyph cmap g
           }
         in (glyph, width) : go rest
