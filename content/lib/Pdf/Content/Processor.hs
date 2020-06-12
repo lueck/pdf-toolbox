@@ -67,7 +67,8 @@ data GraphicsState = GraphicsState {
   gsTextLineMatrix :: Transform Double,  -- ^ Defined only inside text object
   gsTextLeading :: Double,
   gsTextCharSpacing :: Double,
-  gsTextWordSpacing :: Double
+  gsTextWordSpacing :: Double,
+  gsTextScale :: Double -- ^ Horizontal scaling t_h, set by Tz operator
   }
   deriving Show
 
@@ -82,7 +83,8 @@ initialGraphicsState = GraphicsState {
   gsTextLineMatrix = identity,
   gsTextLeading = 0,
   gsTextCharSpacing = 0,
-  gsTextWordSpacing = 0
+  gsTextWordSpacing = 0,
+  gsTextScale = 1 -- 100%, normal width
   }
 
 -- | Glyphs drawn in one shot
@@ -223,6 +225,15 @@ processOp (Op_Tf, [fontO, szO]) p = do
 processOp (Op_Tf, args) _ = Left ("Op_Tf: wrong number of agruments: "
                                   ++ show args)
 
+processOp (Op_Tz, [percent0]) p = do
+  percent <- realValue percent0 `notice` "Tz: should be an integer or real value (percentage)."
+  let gstate = prState p
+  return p {prState = gstate {
+               gsTextScale = percent / 100
+               }}
+processOp (Op_Tz, args) _ = Left ("Op_Tz: wrong number of arguments: "
+                                  ++ show args)
+
 processOp (Op_Tj, [String str]) p = do
   let gstate = prState p
   fontName <-
@@ -239,6 +250,7 @@ processOp (Op_Tj, [String str]) p = do
                        (gsTextMatrix gstate)
                        (gsTextCharSpacing gstate)
                        (gsTextWordSpacing gstate)
+                       (gsTextScale gstate)
                        (prGlyphDecoder p fontName str)
   let sp = Span
         { spGlyphs = glyphs
@@ -273,6 +285,7 @@ processOp (Op_TJ, [Array array]) p = do
                                          tm
                                          (gsTextCharSpacing gstate)
                                          (gsTextWordSpacing gstate)
+                                         (gsTextScale gstate)
                                          (prGlyphDecoder p fontName str)
           in loop tm' (gs : res) rest
         loop tm res (Number n : rest) =
@@ -334,9 +347,10 @@ positionGlyghs :: Double
                -> Transform Double
                -> Double
                -> Double
+               -> Double
                -> [(Glyph, Double)]
                -> (Transform Double, [Glyph])
-positionGlyghs fontSize ctm textMatrix charSpacing wordSpacing
+positionGlyghs fontSize ctm textMatrix charSpacing wordSpacing hScale
   = go textMatrix []
   where
   go tm res [] = (tm, reverse res)
@@ -345,10 +359,10 @@ positionGlyghs fontSize ctm textMatrix charSpacing wordSpacing
           glyphTopLeft = transform (multiply tm ctm) topLeft,
           glyphBottomRight = transform (multiply tm ctm) bottomRight
           }
-        topLeft = transform (scale fontSize fontSize) $ glyphTopLeft g
-        bottomRight = transform (scale fontSize fontSize) $ glyphBottomRight g
+        topLeft = transform (scale (fontSize * hScale) fontSize) $ glyphTopLeft g
+        bottomRight = transform (scale (fontSize * hScale) fontSize) $ glyphBottomRight g
         spacing = charSpacing + case glyphText g of
                                   Just " " -> wordSpacing
                                   _ -> 0
-        tm' = translate (width * fontSize + spacing) 0 tm
+        tm' = translate (width * fontSize * hScale + spacing) 0 tm
     in go tm' (g':res) gs
